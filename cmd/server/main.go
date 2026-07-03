@@ -12,6 +12,7 @@ import (
 	"github.com/anushka/sentineliam/internal/authcode"
 	"github.com/anushka/sentineliam/internal/client"
 	appcrypto "github.com/anushka/sentineliam/internal/crypto"
+	"github.com/anushka/sentineliam/internal/refresh"
 	"github.com/anushka/sentineliam/internal/server"
 	"github.com/anushka/sentineliam/internal/token"
 )
@@ -69,8 +70,10 @@ func runServer() {
 	clients.Register("web-app", "unused", []string{"read", "profile"}, []string{"user"})
 
 	codes := authcode.NewStore(60 * time.Second)
+	refreshStore := refresh.NewStore(24 * time.Hour)
 	oauth := server.NewOAuthServer(clients, issuer, codes)
 	oauth.SetDenylist(denylist)
+	oauth.SetRefreshStore(refreshStore)
 	mw := server.NewMiddleware(issuer)
 
 	mux := http.NewServeMux()

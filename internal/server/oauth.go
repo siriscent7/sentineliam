@@ -8,6 +8,7 @@ import (
 
 	"github.com/anushka/sentineliam/internal/authcode"
 	"github.com/anushka/sentineliam/internal/client"
+	"github.com/anushka/sentineliam/internal/refresh"
 	"github.com/anushka/sentineliam/internal/token"
 )
 
@@ -17,6 +18,7 @@ type OAuthServer struct {
 	issuer   *token.Issuer
 	codes    *authcode.Store
 	denylist *token.Denylist
+	refresh  *refresh.Store
 }
 
 func NewOAuthServer(clients *client.Registry, issuer *token.Issuer, codes *authcode.Store) *OAuthServer {
@@ -101,6 +103,8 @@ func (s *OAuthServer) HandleToken(w http.ResponseWriter, r *http.Request) {
 		s.handleClientCredentials(w, r)
 	case "authorization_code":
 		s.handleAuthorizationCode(w, r)
+	case "refresh_token":
+		s.handleRefreshToken(w, r)
 	default:
 		writeError(w, http.StatusBadRequest, "unsupported_grant_type",
 			"supported: client_credentials, authorization_code")
@@ -148,7 +152,21 @@ func (s *OAuthServer) handleAuthorizationCode(w http.ResponseWriter, r *http.Req
 	if c, ok := s.clients.Lookup(code.ClientID); ok {
 		roles = c.Roles
 	}
-	issueToken(w, s.issuer, code.UserID, code.Scope, roles)
+	access, err := s.issuer.Issue(code.UserID, code.Scope, roles)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
+		return
+	}
+	resp := tokenResponseWithRefresh{
+		AccessToken: access,
+		TokenType:   "Bearer",
+		ExpiresIn:   int(s.issuer.TTL().Seconds()),
+		Scope:       code.Scope,
+	}
+	if s.refresh != nil {
+		resp.RefreshToken = s.refresh.Issue(code.UserID, code.Scope, roles)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // authcodeVerify is a thin wrapper so this file doesn't import authcode twice.
