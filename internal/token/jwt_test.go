@@ -1,6 +1,7 @@
 package token
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,7 +36,7 @@ func TestIssueAndValidate(t *testing.T) {
 }
 
 func TestRejectsExpiredToken(t *testing.T) {
-	iss := newTestIssuer(t, -1*time.Minute) // already expired
+	iss := newTestIssuer(t, -1*time.Minute)
 	tok, _ := iss.Issue("user-1", "read", nil)
 	if _, err := iss.Validate(tok); err == nil {
 		t.Error("expected expired token to be rejected")
@@ -45,8 +46,14 @@ func TestRejectsExpiredToken(t *testing.T) {
 func TestRejectsTamperedToken(t *testing.T) {
 	iss := newTestIssuer(t, 15*time.Minute)
 	tok, _ := iss.Issue("user-1", "read", nil)
-	// tamper: flip a character
-	tampered := tok[:len(tok)-1] + "X"
+
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 JWT segments, got %d", len(parts))
+	}
+	parts[1] = parts[1] + "AAAA" // corrupt the payload -> signature no longer matches
+	tampered := strings.Join(parts, ".")
+
 	if _, err := iss.Validate(tampered); err == nil {
 		t.Error("expected tampered token to be rejected")
 	}

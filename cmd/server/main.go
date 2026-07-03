@@ -1,39 +1,40 @@
 package main
 
 import (
-	"fmt"
 	"log"
+	"net/http"
 	"time"
 
+	"github.com/anushka/sentineliam/internal/client"
+	"github.com/anushka/sentineliam/internal/server"
 	"github.com/anushka/sentineliam/internal/token"
 )
 
 func main() {
+	// Set up signing keys + issuer.
 	keys, err := token.GenerateKeyPair()
 	if err != nil {
 		log.Fatalf("key generation failed: %v", err)
 	}
-
 	issuer := token.NewIssuer(keys, "sentineliam", 15*time.Minute)
 
-	// Issue a token
-	jwtStr, err := issuer.Issue("user-123", "read write", []string{"admin"})
-	if err != nil {
-		log.Fatalf("issue failed: %v", err)
+	// Seed a demo client.
+	clients := client.NewRegistry()
+	if err := clients.Register(
+		"service-a", "s3cr3t",
+		[]string{"read", "write"},
+		[]string{"service"},
+	); err != nil {
+		log.Fatalf("client registration failed: %v", err)
 	}
-	fmt.Println("Issued JWT:")
-	fmt.Println(jwtStr)
 
-	// Validate it
-	claims, err := issuer.Validate(jwtStr)
-	if err != nil {
-		log.Fatalf("validation failed: %v", err)
-	}
-	fmt.Printf("\nValidated. Subject=%s Scope=%q Roles=%v Expires=%s\n",
-		claims.Subject, claims.Scope, claims.Roles, claims.ExpiresAt)
+	oauth := server.NewOAuthServer(clients, issuer)
 
-	// Try validating garbage
-	if _, err := issuer.Validate("not.a.real.token"); err != nil {
-		fmt.Printf("\nCorrectly rejected invalid token: %v\n", err)
-	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", oauth.HandleToken)
+
+	addr := ":8080"
+	log.Printf("SentinelIAM listening on %s", addr)
+	log.Printf("Try: curl -s -u service-a:s3cr3t -d 'grant_type=client_credentials&scope=read write' http://localhost%s/token", addr)
+	log.Fatal(http.ListenAndServe(addr, mux))
 }
