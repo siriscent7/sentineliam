@@ -1,6 +1,8 @@
 package token
 
 import (
+	"crypto/rsa"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -13,7 +15,8 @@ type Issuer struct {
 	keys     *KeyPair
 	issuer   string
 	ttl      time.Duration
-	denylist *Denylist // may be nil (no revocation)
+	denylist *Denylist
+	kid      string
 }
 
 type Claims struct {
@@ -23,8 +26,10 @@ type Claims struct {
 }
 
 func NewIssuer(keys *KeyPair, issuer string, ttl time.Duration) *Issuer {
-	return &Issuer{keys: keys, issuer: issuer, ttl: ttl}
+	return &Issuer{keys: keys, issuer: issuer, ttl: ttl, kid: computeKID(keys.Public)}
 }
+
+func (i *Issuer) KID() string { return i.kid }
 
 // WithDenylist attaches a denylist so Validate rejects revoked tokens.
 func (i *Issuer) WithDenylist(d *Denylist) *Issuer {
@@ -48,6 +53,7 @@ func (i *Issuer) Issue(subject, scope string, roles []string) (string, error) {
 		},
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = i.kid
 	return tok.SignedString(i.keys.Private)
 }
 
@@ -90,3 +96,13 @@ func (i *Issuer) ParseClaimsForIntrospection(tokenString string) (*Claims, error
 
 // Public keys accessor (used later by JWKS).
 func (i *Issuer) KeyPair() *KeyPair { return i.keys }
+
+func computeKID(pub *rsa.PublicKey) string {
+	// A stable key id derived from the modulus (first 8 bytes, hex).
+	b := pub.N.Bytes()
+	n := 8
+	if len(b) < n {
+		n = len(b)
+	}
+	return hex.EncodeToString(b[:n])
+}

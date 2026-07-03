@@ -67,10 +67,11 @@ func runServer() {
 
 	clients := client.NewRegistry()
 	clients.Register("service-a", "s3cr3t", []string{"read", "write"}, []string{"service", "admin"})
-	clients.Register("web-app", "unused", []string{"read", "profile"}, []string{"user"})
+	clients.Register("web-app", "unused", []string{"openid", "read", "profile"}, []string{"user"})
 
 	codes := authcode.NewStore(60 * time.Second)
 	refreshStore := refresh.NewStore(24 * time.Hour)
+
 	oauth := server.NewOAuthServer(clients, issuer, codes)
 	oauth.SetDenylist(denylist)
 	oauth.SetRefreshStore(refreshStore)
@@ -81,6 +82,9 @@ func runServer() {
 	mux.HandleFunc("/token", oauth.HandleToken)
 	mux.HandleFunc("/introspect", oauth.HandleIntrospect)
 	mux.HandleFunc("/revoke", oauth.HandleRevoke)
+	mux.HandleFunc("/.well-known/openid-configuration", oauth.HandleDiscovery)
+	mux.HandleFunc("/jwks", oauth.HandleJWKS)
+	mux.Handle("/userinfo", mw.Authenticate(http.HandlerFunc(server.UserInfoHandler)))
 	mux.Handle("/profile", mw.Authenticate(http.HandlerFunc(server.ProfileHandler)))
 	mux.Handle("/data", mw.Authenticate(mw.RequireScope("write", http.HandlerFunc(server.ProfileHandler))))
 	mux.Handle("/admin", mw.Authenticate(mw.RequireRole("admin", http.HandlerFunc(server.AdminHandler))))

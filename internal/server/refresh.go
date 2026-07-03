@@ -11,10 +11,11 @@ func (s *OAuthServer) SetRefreshStore(r *refresh.Store) {
 	s.refresh = r
 }
 
-// tokenResponseWithRefresh extends the token response with a refresh token.
+// tokenResponseWithRefresh extends the token response with refresh + ID tokens.
 type tokenResponseWithRefresh struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token,omitempty"`
+	IDToken      string `json:"id_token,omitempty"`
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int    `json:"expires_in"`
 	Scope        string `json:"scope,omitempty"`
@@ -32,7 +33,6 @@ func (s *OAuthServer) handleRefreshToken(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		switch err {
 		case refresh.ErrReuse:
-			// theft detected — family already revoked in the store
 			writeError(w, http.StatusBadRequest, "invalid_grant",
 				"refresh token reuse detected; session revoked")
 		default:
@@ -49,7 +49,7 @@ func (s *OAuthServer) handleRefreshToken(w http.ResponseWriter, r *http.Request)
 
 	writeJSON(w, http.StatusOK, tokenResponseWithRefresh{
 		AccessToken:  access,
-		RefreshToken: result.NewRefreshToken, // rotated: a fresh refresh token
+		RefreshToken: result.NewRefreshToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    int(s.issuer.TTL().Seconds()),
 		Scope:        result.Scope,

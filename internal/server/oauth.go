@@ -38,9 +38,6 @@ type errorResponse struct {
 }
 
 // HandleAuthorize implements GET /authorize for the authorization_code flow.
-// For this demo, the user is assumed authenticated & consenting (a real IdP
-// would render a login + consent page). It issues a code bound to the PKCE
-// challenge and redirects back to the client's redirect_uri with ?code=...
 func (s *OAuthServer) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	responseType := q.Get("response_type")
@@ -68,10 +65,8 @@ func (s *OAuthServer) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Demo: assume the logged-in user is "user-123" and has consented.
 	code := s.codes.Issue(clientID, "user-123", scope, codeChallenge)
 
-	// Redirect back with the code (and state, echoed for CSRF protection).
 	redirect, err := url.Parse(redirectURI)
 	if err != nil {
 		http.Error(w, "bad redirect_uri", http.StatusBadRequest)
@@ -107,7 +102,7 @@ func (s *OAuthServer) HandleToken(w http.ResponseWriter, r *http.Request) {
 		s.handleRefreshToken(w, r)
 	default:
 		writeError(w, http.StatusBadRequest, "unsupported_grant_type",
-			"supported: client_credentials, authorization_code")
+			"supported: client_credentials, authorization_code, refresh_token")
 	}
 }
 
@@ -166,12 +161,26 @@ func (s *OAuthServer) handleAuthorizationCode(w http.ResponseWriter, r *http.Req
 	if s.refresh != nil {
 		resp.RefreshToken = s.refresh.Issue(code.UserID, code.Scope, roles)
 	}
+	// OIDC: issue an ID token if the openid scope was requested.
+	if scopeContains(code.Scope, "openid") {
+		if idTok, err := s.issuer.IssueIDToken(code.UserID, code.ClientID, ""); err == nil {
+			resp.IDToken = idTok
+		}
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// authcodeVerify is a thin wrapper so this file doesn't import authcode twice.
 func authcodeVerify(verifier, challenge string) bool {
 	return authcode.VerifyPKCE(verifier, challenge)
+}
+
+func scopeContains(scope, want string) bool {
+	for _, s := range strings.Fields(scope) {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 func issueToken(w http.ResponseWriter, issuer *token.Issuer, subject, scope string, roles []string) {
