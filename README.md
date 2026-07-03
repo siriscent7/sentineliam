@@ -1,21 +1,22 @@
 # SentinelIAM — An OAuth2 / OIDC Identity & Access Platform in Go
 
-**SentinelIAM** is a security-focused identity and access-management server built from scratch in **Go**. It implements **OAuth2** grant flows (client-credentials and authorization-code with PKCE), **RS256 JWT** issuance and validation, **RBAC + scope-based** access control, and **envelope encryption** (AES-256-GCM) for secrets-at-rest — demonstrating the authentication, authorization, and applied-cryptography primitives behind enterprise IAM.
+**SentinelIAM** is a security-focused identity and access-management server built from scratch in **Go**. It implements a full **OpenID Connect (OIDC)** provider on top of **OAuth2** — authorization-code (with PKCE) and client-credentials flows, **RS256 JWT** issuance/validation, ID tokens, a JWKS endpoint, refresh-token rotation with reuse detection, token introspection/revocation, RBAC + scope access control, and **envelope encryption** (AES-256-GCM) for secrets-at-rest.
 
 ## Motivation
 
-Every platform depends on secure authentication and fine-grained authorization. Rather than wrapping a managed identity provider, SentinelIAM implements the actual protocols and cryptographic building blocks — OAuth2 flows, JWT signing, PKCE, RBAC, and envelope encryption — to show how enterprise IAM works under the hood.
+Every platform depends on secure authentication and fine-grained authorization. Rather than wrapping a managed identity provider, SentinelIAM implements the actual protocols and cryptographic primitives behind enterprise IAM — OAuth2/OIDC flows, JWT signing, PKCE, refresh rotation, revocation, and envelope encryption — to show how identity infrastructure works under the hood.
 
 ## Key Features
 
-- **OAuth2 flows**
-  - **Client-credentials** (service-to-service) with bcrypt-hashed client secrets and scope validation.
-  - **Authorization-code with PKCE (S256)** — the secure flow for public clients; single-use, short-lived codes bound to the issuing client.
-- **RS256 JWT** — asymmetric signing (private key signs, public key verifies); validation checks signature, expiry, and signing method (**algorithm-confusion protection**).
-- **RBAC + scope enforcement** — composable middleware gating protected resources by role and OAuth scope.
-- **Envelope encryption** — per-secret Data Encryption Keys (DEKs) wrapped by a master Key Encryption Key (KEK), using **AES-256-GCM** authenticated encryption (confidentiality + tamper detection).
-- **Security hardening** — bcrypt secret hashing, constant-time PKCE comparison, timing-attack mitigation on unknown clients, fresh DEK + nonce per encryption.
-- **Comprehensive tests** — JWT lifecycle, both OAuth flows, PKCE, RBAC/scope, and envelope encryption.
+- **OAuth2 flows** — client-credentials (bcrypt-hashed secrets, scope validation) and authorization-code with **PKCE (S256)** (single-use, short-lived codes bound to the issuing client).
+- **OpenID Connect** — **ID tokens** (issued for the `openid` scope, addressed to the client), **JWKS endpoint** (`kid`-keyed public keys for independent verification + rotation), a **discovery document**, and a **/userinfo** endpoint.
+- **RS256 JWT** — asymmetric signing; validation checks signature, expiry, and signing method (**algorithm-confusion protection**); tokens carry a `kid` for key selection.
+- **Refresh tokens with rotation + reuse detection** — each refresh is single-use; replaying a rotated token triggers **family revocation** (theft detection).
+- **Token introspection (RFC 7662) + revocation (RFC 7009)** — real-time token status and revocation via a **JTI denylist**.
+- **RBAC + scope enforcement** — composable middleware gating resources by role and OAuth scope.
+- **Envelope encryption** — per-secret DEKs wrapped by a master KEK, using **AES-256-GCM** authenticated encryption (confidentiality + tamper detection).
+- **Security hardening** — bcrypt, constant-time comparisons, timing-attack mitigation, fresh DEK + nonce per encryption.
+- **Comprehensive tests** across every component.
 
 ## Architecture
 
@@ -23,50 +24,60 @@ Every platform depends on secure authentication and fine-grained authorization. 
 flowchart TD
     Client[Client / Service]
 
-    subgraph OAuth["OAuth2 / OIDC Server"]
+    subgraph OIDC["OAuth2 / OIDC Server"]
         AUTH[/authorize - auth code + PKCE/]
-        TOKEN[/token - client_credentials + authorization_code/]
+        TOKEN[/token - all grants/]
+        DISC[/.well-known/openid-configuration/]
+        JWKS[/jwks - public keys/]
+        USERINFO[/userinfo/]
     end
 
-    subgraph Security["Security Core"]
-        JWT[RS256 JWT Issuer]
-        REG[Client Registry - bcrypt secrets]
-        CODES[Auth-Code Store - single-use, PKCE]
+    subgraph Core["Security Core"]
+        JWT[RS256 JWT + ID tokens]
+        REG[Client Registry - bcrypt]
+        CODES[Auth-Code Store - PKCE, single-use]
+        REFRESH[Refresh Store - rotation + reuse detection]
+        DENY[Denylist - revocation]
         MW[RBAC + Scope Middleware]
         CRYPTO[Envelope Encryption - AES-256-GCM]
     end
 
-    subgraph Resources["Protected Resources"]
-        P[/profile/]
-        D[/data - requires write scope/]
-        A[/admin - requires admin role/]
-    end
-
-    Client --> AUTH
-    Client --> TOKEN
-    AUTH --> CODES
-    TOKEN --> REG
+    Client --> AUTH --> CODES
+    Client --> TOKEN --> REG
     TOKEN --> JWT
-    Client -->|Bearer JWT| MW
-    MW --> P
-    MW --> D
-    MW --> A
+    TOKEN --> REFRESH
+    TOKEN --> DENY
+    Client --> DISC
+    Client --> JWKS
+    Client -->|Bearer JWT| MW --> USERINFO
     CRYPTO -.protects secrets at rest.- REG
 ```
 
 ## Request Flows
 
-### Authorization-Code Flow with PKCE
+### Authorization-Code + PKCE + OIDC
 
 ```mermaid
 flowchart TD
-    A[App generates code_verifier, hashes to code_challenge] --> B[GET /authorize with code_challenge]
+    A[App: code_verifier -> SHA256 -> code_challenge] --> B[GET /authorize with challenge + openid scope]
     B --> C[Server issues single-use code bound to challenge]
     C --> D[Redirect back with code + state]
     D --> E[POST /token with code + code_verifier]
     E --> F{SHA256 verifier == stored challenge?}
-    F -->|Yes| G[Issue RS256 access token]
+    F -->|Yes| G[Issue access + refresh + id_token]
     F -->|No| H[Reject: invalid_grant]
+```
+
+### Refresh-Token Rotation + Reuse Detection
+
+```mermaid
+flowchart TD
+    A[POST /token grant_type=refresh_token] --> B{Token state?}
+    B -->|active| C[Mark used, issue new token in same family]
+    B -->|used - already rotated| D[REUSE DETECTED: revoke entire family]
+    B -->|revoked/expired| E[Reject: invalid_grant]
+    C --> F[Return new access + refresh tokens]
+    D --> G[Reject: session revoked]
 ```
 
 ### Envelope Encryption
@@ -78,93 +89,74 @@ flowchart TD
     B --> D[Encrypt DEK with master KEK]
     C --> E[Store envelope: ciphertext + encrypted DEK]
     D --> E
-    E --> F[Decrypt: unwrap DEK with KEK, then decrypt data]
-    F --> G{GCM auth tag valid?}
-    G -->|Yes| H[Return plaintext]
-    G -->|No| I[Reject: tampered]
+    E --> F{GCM auth tag valid on decrypt?}
+    F -->|Yes| G[Return plaintext]
+    F -->|No| H[Reject: tampered]
 ```
 
-## Components
+## Endpoints
 
-| Package | Responsibility | Concepts |
-|---|---|---|
-| `token` | RSA key pair, RS256 JWT issue/validate | JWT, asymmetric crypto, alg-confusion protection |
-| `client` | Client registry, bcrypt secret auth | credential hashing, timing mitigation |
-| `authcode` | Single-use codes + PKCE verification | OAuth2, PKCE (S256), constant-time compare |
-| `server` | `/authorize`, `/token`, RBAC/scope middleware | OAuth2 flows, access control |
-| `crypto` | AES-256-GCM, envelope encryption | authenticated encryption, DEK/KEK, key rotation |
+| Endpoint | Description |
+|---|---|
+| `GET /authorize` | Start auth-code flow (PKCE required) |
+| `POST /token` | Issue tokens (client_credentials / authorization_code / refresh_token) |
+| `POST /introspect` | Token status (RFC 7662) |
+| `POST /revoke` | Revoke a token (RFC 7009) |
+| `GET /.well-known/openid-configuration` | OIDC discovery document |
+| `GET /jwks` | Public signing keys (JWKS) |
+| `GET /userinfo` | OIDC user claims (protected) |
+| `GET /profile` `/data` `/admin` | Protected resources (scope/role gated) |
 
 ## Project Structure
 
 ```
 cmd/server/main.go              # entry point (server + demo-crypto mode)
 internal/
-├── token/                      # RSA keys + RS256 JWT
-│   ├── keys.go, jwt.go, id.go
+├── token/                      # RSA keys, RS256 JWT, ID tokens, denylist
+│   ├── keys.go, jwt.go, idtoken.go, id.go, denylist.go
 ├── client/                     # client registry (bcrypt secrets)
-│   └── client.go
 ├── authcode/                   # authorization codes + PKCE
-│   ├── authcode.go, pkce.go
-├── server/                     # OAuth endpoints + middleware
-│   ├── oauth.go, middleware.go, resource.go
-└── crypto/                     # envelope encryption
-    ├── aesgcm.go, envelope.go, errors.go
+├── refresh/                    # refresh tokens (rotation + reuse detection)
+├── server/                     # OAuth/OIDC endpoints + middleware
+│   ├── oauth.go, refresh.go, introspect.go
+│   ├── jwks.go, discovery.go, userinfo.go
+│   ├── middleware.go, resource.go
+└── crypto/                     # envelope encryption (AES-256-GCM)
 ```
 
 ## Build & Run
 
-### Prerequisites
-- Go 1.21+
-
-### Test
 ```bash
 go test ./...
+go run ./cmd/server            # start the server on :8080
+go run ./cmd/server demo-crypto # envelope encryption demo
 ```
 
-### Run the server
+### OIDC demo
 ```bash
-go run ./cmd/server
-```
-
-### Demo: OAuth2 + RBAC (curl)
-```bash
-# client-credentials -> access token
-TOKEN=$(curl -s -u service-a:s3cr3t \
-  -d 'grant_type=client_credentials&scope=read write' \
-  http://localhost:8080/token | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
-
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/profile   # any valid token
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/data      # requires write scope
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/admin     # requires admin role
-curl -s http://localhost:8080/profile                                     # 401 without token
-```
-
-### Demo: envelope encryption
-```bash
-go run ./cmd/server demo-crypto
+curl -s http://localhost:8080/.well-known/openid-configuration   # discovery
+curl -s http://localhost:8080/jwks                               # public keys
 ```
 
 ## Design Decisions
 
-**RS256 over HS256** — Asymmetric signing lets resource servers verify tokens with only the public key; the signing secret never leaves the auth server. Validation explicitly checks the signing method to prevent algorithm-confusion attacks.
+**RS256 + JWKS over HS256** — Asymmetric signing lets relying parties verify tokens with the published public key (via JWKS, keyed by `kid`); the signing key never leaves the server, and keys can be rotated by publishing a new one. Validation explicitly checks the signing method to prevent algorithm-confusion attacks.
 
-**PKCE mandatory for the auth-code flow** — Protects public clients (SPAs, mobile) from authorization-code interception; a stolen code is useless without the verifier, which never leaves the client. Verification uses constant-time comparison.
+**PKCE mandatory for the auth-code flow** — Protects public clients from code interception; verification uses constant-time comparison.
 
-**bcrypt for client secrets** — Secrets are stored hashed with per-hash salt, never plaintext. Unknown clients still trigger a bcrypt comparison against a dummy hash to mitigate timing-based client enumeration.
+**Refresh rotation with reuse detection** — Refresh tokens are single-use; replaying a rotated token signals theft, so the entire token family is revoked, forcing re-authentication. This is how modern IdPs detect stolen refresh tokens.
 
-**Single-use, short-lived authorization codes** — Consumed atomically under a mutex and bound to the issuing client, defending against replay and code-injection.
+**Stateless JWTs + a denylist for revocation** — JWTs validate offline, while a JTI denylist (TTL = token lifetime) enables real-time revocation without a database round-trip on every request.
 
-**Envelope encryption (DEK/KEK)** — Each secret gets a fresh DEK; only DEKs are wrapped by the master KEK. Rotating the KEK re-wraps small DEKs instead of re-encrypting all data, and a compromised DEK affects a single secret. AES-256-GCM provides authenticated encryption (tamper detection).
+**bcrypt + timing mitigation** — Client secrets are hashed; unknown clients still trigger a dummy bcrypt comparison to prevent timing-based enumeration.
 
-**Composable middleware** — Access control is expressed as chained handler wrappers (`Authenticate → RequireScope/RequireRole → resource`), with validated claims passed via `context.Context`.
+**Envelope encryption (DEK/KEK)** — Each secret gets a fresh DEK; only DEKs are wrapped by the master KEK, so key rotation re-wraps small keys instead of re-encrypting all data. AES-256-GCM provides authenticated encryption (tamper detection).
 
 ## Roadmap
-- OIDC layer: ID tokens, discovery document, JWKS endpoint with key rotation
-- Refresh tokens with rotation + reuse detection
 - Attribute-based access control (ABAC) alongside RBAC
-- Token introspection + revocation (denylist)
-- Persistent client store (PostgreSQL) and secrets encrypted at rest via the envelope layer
+- Persistent client store (PostgreSQL) with secrets encrypted via the envelope layer
 - TLS / mTLS for confidential clients
+- Multiple active signing keys in JWKS for zero-downtime rotation
 
 ## License
 MIT
