@@ -13,9 +13,10 @@ import (
 
 // OAuthServer handles OAuth2 authorization + token requests.
 type OAuthServer struct {
-	clients *client.Registry
-	issuer  *token.Issuer
-	codes   *authcode.Store
+	clients  *client.Registry
+	issuer   *token.Issuer
+	codes    *authcode.Store
+	denylist *token.Denylist
 }
 
 func NewOAuthServer(clients *client.Registry, issuer *token.Issuer, codes *authcode.Store) *OAuthServer {

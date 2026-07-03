@@ -25,7 +25,6 @@ func main() {
 }
 
 func runCryptoDemo() {
-	// A 32-byte master key (KEK). In production this lives in a KMS/HSM.
 	kek := make([]byte, 32)
 	io.ReadFull(rand.Reader, kek)
 
@@ -50,7 +49,6 @@ func runCryptoDemo() {
 	}
 	fmt.Printf("\nDecrypted:  %s\n", decrypted)
 
-	// Tamper detection demo
 	env.Ciphertext = "AAAA" + env.Ciphertext[4:]
 	if _, err := km.Decrypt(env); err != nil {
 		fmt.Printf("\nTampered ciphertext correctly rejected: %v\n", err)
@@ -62,7 +60,9 @@ func runServer() {
 	if err != nil {
 		log.Fatalf("key generation failed: %v", err)
 	}
-	issuer := token.NewIssuer(keys, "sentineliam", 15*time.Minute)
+
+	denylist := token.NewDenylist()
+	issuer := token.NewIssuer(keys, "sentineliam", 15*time.Minute).WithDenylist(denylist)
 
 	clients := client.NewRegistry()
 	clients.Register("service-a", "s3cr3t", []string{"read", "write"}, []string{"service", "admin"})
@@ -70,11 +70,14 @@ func runServer() {
 
 	codes := authcode.NewStore(60 * time.Second)
 	oauth := server.NewOAuthServer(clients, issuer, codes)
+	oauth.SetDenylist(denylist)
 	mw := server.NewMiddleware(issuer)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/authorize", oauth.HandleAuthorize)
 	mux.HandleFunc("/token", oauth.HandleToken)
+	mux.HandleFunc("/introspect", oauth.HandleIntrospect)
+	mux.HandleFunc("/revoke", oauth.HandleRevoke)
 	mux.Handle("/profile", mw.Authenticate(http.HandlerFunc(server.ProfileHandler)))
 	mux.Handle("/data", mw.Authenticate(mw.RequireScope("write", http.HandlerFunc(server.ProfileHandler))))
 	mux.Handle("/admin", mw.Authenticate(mw.RequireRole("admin", http.HandlerFunc(server.AdminHandler))))
