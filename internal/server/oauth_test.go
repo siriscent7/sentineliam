@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anushka/sentineliam/internal/authcode"
 	"github.com/anushka/sentineliam/internal/client"
 	"github.com/anushka/sentineliam/internal/token"
 )
@@ -24,7 +25,8 @@ func testServer(t *testing.T) *OAuthServer {
 	if err := reg.Register("service-a", "s3cr3t", []string{"read", "write"}, []string{"service"}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	return NewOAuthServer(reg, issuer)
+	codes := authcode.NewStore(60 * time.Second)
+	return NewOAuthServer(reg, issuer, codes)
 }
 
 func postToken(s *OAuthServer, form url.Values, basicUser, basicPass string) *httptest.ResponseRecorder {

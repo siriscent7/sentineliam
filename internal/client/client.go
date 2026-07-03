@@ -61,3 +61,9 @@ func (c *Client) ScopeAllowed(scope string) bool {
 	}
 	return false
 }
+
+// Lookup returns a registered client by id (no secret check).
+func (r *Registry) Lookup(id string) (*Client, bool) {
+	c, ok := r.clients[id]
+	return c, ok
+}
